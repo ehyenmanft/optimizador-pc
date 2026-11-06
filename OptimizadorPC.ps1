@@ -116,6 +116,11 @@ public static class OptStats {
     [DllImport("kernel32.dll")] static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hwnd, int index);
     [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr hwnd, int index, int value);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr pid);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     static long lastIdle, lastTotal;
 
     public static int Cpu() {
@@ -131,6 +136,13 @@ public static class OptStats {
         MemStatus m = new MemStatus();
         m.Length = (uint)Marshal.SizeOf(m);
         return GlobalMemoryStatusEx(ref m) ? (int)m.Load : 0;
+    }
+    // Windows niega el foco a quien hizo clic en una ventana que no se activa: se toma prestado de la ventana activa
+    public static void BringToFront(IntPtr hwnd) {
+        uint me = GetCurrentThreadId(), other = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
+        AttachThreadInput(me, other, true);
+        SetForegroundWindow(hwnd);
+        AttachThreadInput(me, other, false);
     }
     // Fuera de Alt+Tab y sin quitar el foco a la ventana activa (por ejemplo, un juego)
     public static void MakeOverlay(IntPtr hwnd) {
@@ -217,7 +229,7 @@ $TaskName     = 'OptimizadorPC'
 $OwnPlanGuid  = '3c1d6a7e-5b2f-4f0e-9a51-0c0ffee0aa01'   # copia propia del plan "Máximo rendimiento"
 $UltimateGuid = 'e9a42b02-d5df-448d-aa00-03f14749eb61'
 $HighPerfGuid = '8c5e7fda-e8bf-4a96-9a85-e6e09a20f6e2'
-$AppVersion   = 'v4.1'
+$AppVersion   = 'v4.2'
 
 $script:ui = @{}
 $script:PendingLog = @()
@@ -1869,7 +1881,7 @@ $script:FastTimer.Add_Tick({ if ($script:ShowEvent.WaitOne(0)) { Show-Main } })
 [xml]$widgetXaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Widget Optimizador PC" Width="240" Height="88"
+        Title="Widget Optimizador PC" Width="240" Height="112"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent" ResizeMode="NoResize"
         ShowInTaskbar="False" Topmost="True" ShowActivated="False"
         Foreground="#E0E6ED" FontFamily="Segoe UI" FontSize="11.5" UseLayoutRounding="True">
@@ -1895,6 +1907,25 @@ $script:FastTimer.Add_Tick({ if ($script:ShowEvent.WaitOne(0)) { Show-Main } })
       <Setter Property="CornerRadius" Value="3"/>
       <Setter Property="Width" Value="0"/>
       <Setter Property="HorizontalAlignment" Value="Left"/>
+    </Style>
+    <Style x:Key="WTitle" TargetType="Button">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Focusable" Value="False"/>
+      <Setter Property="Foreground" Value="#9AA4B2"/>
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+      <Setter Property="FontSize" Value="10"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Width="24" Height="20" CornerRadius="5" Background="Transparent">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="#30FFFFFF"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
     </Style>
     <Style x:Key="Pulsador" TargetType="Button">
       <Setter Property="Cursor" Value="Hand"/>
@@ -1935,8 +1966,17 @@ $script:FastTimer.Add_Tick({ if ($script:ShowEvent.WaitOne(0)) { Show-Main } })
       </Setter>
     </Style>
   </Window.Resources>
-  <Border x:Name="WidgetRoot" Background="#EE141A24" BorderBrush="#24FFFFFF" BorderThickness="1" CornerRadius="12" Padding="12,8,8,8" ToolTip="Arrastra para mover">
-    <Grid>
+  <Border x:Name="WidgetRoot" Background="#EE141A24" BorderBrush="#24FFFFFF" BorderThickness="1" CornerRadius="12" Padding="12,4,6,8" ToolTip="Arrastra para mover">
+    <DockPanel>
+    <DockPanel DockPanel.Dock="Top">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <Button x:Name="WOpen" Style="{StaticResource WTitle}" Content="&#xE8A7;" AutomationProperties.Name="Abrir panel" ToolTip="Abrir panel"/>
+        <Button x:Name="WMin" Style="{StaticResource WTitle}" Content="&#xE921;" AutomationProperties.Name="Minimizar widget" ToolTip="Minimizar"/>
+        <Button x:Name="WClose" Style="{StaticResource WTitle}" Content="&#xE8BB;" AutomationProperties.Name="Cerrar widget" ToolTip="Cerrar (vuelve desde el icono de la bandeja)"/>
+      </StackPanel>
+      <TextBlock x:Name="WMiniText" VerticalAlignment="Center" Visibility="Collapsed"/>
+    </DockPanel>
+    <Grid x:Name="WBody">
       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="58"/></Grid.ColumnDefinitions>
       <Grid.RowDefinitions><RowDefinition/><RowDefinition/><RowDefinition/></Grid.RowDefinitions>
       <DockPanel>
@@ -1961,13 +2001,14 @@ $script:FastTimer.Add_Tick({ if ($script:ShowEvent.WaitOne(0)) { Show-Main } })
         <TextBlock x:Name="WPurgeText" Text="Liberar" FontSize="10.5" HorizontalAlignment="Center" Foreground="#9AA4B2"/>
       </StackPanel>
     </Grid>
+    </DockPanel>
   </Border>
 </Window>
 '@
 
 $script:Widget = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $widgetXaml))
 $wg = @{}
-foreach ($n in 'WidgetRoot', 'WCpuText', 'WCpuBar', 'WRamText', 'WRamBar', 'WNetText', 'WPurge', 'WPurgeText') { $wg[$n] = $script:Widget.FindName($n) }
+foreach ($n in 'WidgetRoot', 'WCpuText', 'WCpuBar', 'WRamText', 'WRamBar', 'WNetText', 'WPurge', 'WPurgeText', 'WOpen', 'WMin', 'WClose', 'WBody', 'WMiniText') { $wg[$n] = $script:Widget.FindName($n) }
 
 function Format-Rate([double]$bytesPerSec) {
     if ($bytesPerSec -ge 1MB) { '{0:N1} MB/s' -f ($bytesPerSec / 1MB) } else { '{0:N0} KB/s' -f ($bytesPerSec / 1KB) }
@@ -1993,6 +2034,7 @@ function Set-WidgetBar($bar, $text, [int]$pct) {
 function Update-Widget {
     Set-WidgetBar $wg.WCpuBar $wg.WCpuText ([OptStats]::Cpu())
     Set-WidgetBar $wg.WRamBar $wg.WRamText ([OptStats]::Ram())
+    $wg.WMiniText.Text = "CPU $($wg.WCpuText.Text)   RAM $($wg.WRamText.Text)"
     $net = Get-NetBytes
     if ($script:NetPrev) {
         $sec = ($net.Time - $script:NetPrev.Time).TotalSeconds
@@ -2006,6 +2048,15 @@ function Update-Widget {
         $wg.WPurgeText.Text = 'Liberar'
         $script:PurgeMsgUntil = $null
     }
+}
+
+function Switch-WidgetSize {
+    $min = $wg.WBody.Visibility -eq 'Visible'
+    $wg.WBody.Visibility = if ($min) { 'Collapsed' } else { 'Visible' }
+    $wg.WMiniText.Visibility = if ($min) { 'Visible' } else { 'Collapsed' }
+    $wg.WMin.Content = [string][char]$(if ($min) { 0xE922 } else { 0xE921 })
+    $wg.WMin.ToolTip = if ($min) { 'Restaurar' } else { 'Minimizar' }
+    $script:Widget.Height = if ($min) { 30 } else { 112 }
 }
 
 function Set-Widget([bool]$on) {
@@ -2045,6 +2096,12 @@ $wg.WidgetRoot.Add_MouseLeftButtonDown({
     $script:Settings.WidgetY = $script:Widget.Top
     Save-Settings
 })
+$wg.WOpen.Add_Click({
+    Show-Main
+    [OptStats]::BringToFront((New-Object System.Windows.Interop.WindowInteropHelper $window).Handle)
+})
+$wg.WMin.Add_Click({ Switch-WidgetSize })
+$wg.WClose.Add_Click({ Set-Widget $false })
 $wg.WPurge.Add_Click({
     $wg.WPurge.IsEnabled = $false
     $wg.WPurgeText.Text = 'Liberando'
